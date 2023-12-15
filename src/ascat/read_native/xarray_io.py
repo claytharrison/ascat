@@ -587,7 +587,7 @@ class SwathIOBase(ABC):
     def __init__(self, source, engine, **kwargs):
         self.source = source
         self.engine = engine
-        self._cell_vals = None
+        self.cell_vals = None
         # if filename is a generator, use open_mfdataset
         # else use open_dataset
         chunks = kwargs.pop("chunks", None)
@@ -643,8 +643,8 @@ class SwathIOBase(ABC):
         """
         Read data for a single cell
         """
-        if self._cell_vals is None:
-            self._cell_vals = self.grid.gpi2cell(self._ds.location_id.values)
+        if self.cell_vals is None:
+            self.cell_vals = self.grid.gpi2cell(self._ds.location_id.values)
         idxs = np.where(self.cell_vals == cell)[0]
         if not np.any(idxs):
             return None
