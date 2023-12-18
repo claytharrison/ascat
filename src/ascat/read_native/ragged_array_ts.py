@@ -28,7 +28,6 @@
 import os
 import warnings
 import ctypes
-import ascat.read_native.istarmap
 import multiprocessing as mp
 from datetime import datetime
 from pathlib import Path
@@ -211,7 +210,7 @@ class CellFileCollectionStack():
 
         return data
 
-    def write_cells(self, out_dir, ioclass, cells=None, out_cell_size=None, processes=8, **kwargs):
+    def write_cells(self, out_dir, ioclass, cells=None, out_cell_size=None, n_processes=8, **kwargs):
         """
         Merge the data in all the collection by cell, and write each cell to disk.
 
@@ -246,7 +245,7 @@ class CellFileCollectionStack():
         # for cell in tqdm.tqdm(cells):
         #     self._write_single_cell(out_dir, ioclass, cell, out_cell_size, **kwargs)
 
-        with mp.Pool(processes=processes) as pool:
+        with mp.Pool(processes=n_processes) as pool:
             # from time import time
             # start = time()
             # pool.starmap(self._write_single_cell, [(out_dir, ioclass, cell, out_cell_size)
@@ -262,7 +261,7 @@ class CellFileCollectionStack():
                 pool.imap_unordered(
                     self._write_single_cell_wrapper,
                     [(out_dir, ioclass, cell, out_cell_size) for cell in cells],
-                    chunksize=(len(cells)//processes)+1,
+                    chunksize=(len(cells)//n_processes)+1,
                 ),
                 total=len(cells)
             ):
@@ -876,12 +875,6 @@ class CellFileCollection:
         """
         self.close()
 
-def new_dict_parts(manager, cells):
-    dict = manager.dict()
-    for cell in cells:
-        dict[cell] = manager.list([])
-    return dict, manager.Value("f", 0.0),
-
 class ManagedCellDict(object):
     def __init__(self, dict, counter, lock, flag, max_size):
         # self._manager = manager
@@ -909,21 +902,24 @@ class ManagedCellDict(object):
 
     def add_data(self, cell, data):
         # keep processes from requesting lock when full
-        if self._is_full.value:
-            return False
+        # if self._is_full.value:
+        #     return False
         with self._lock:
             # kick processes who get the lock after it fills back to waiting
-            if self._is_full.value:
-                return False
+            # if self._is_full.value:
+            #     return False
             # check if adding data will put us over the max size
-            new_size = self._size.value + data.nbytes / 1e6
-            if new_size > self._max_size:
+            # print("adding data", data.nbytes / 1e6)
+            # new_size = self.size + data.nbytes / 1e6
+            # print("new size:", new_size)
+            # print("max size:", self._max_size)
+            # if new_size > self._max_size:
                 # and kick back to waiting if so
-                self._is_full.value = 1
-                print("DICT FULL")
-                return False
+                # self._is_full.value = True
+                # print("DICT FULL")
+                # return False
             # otherwise add the data and update the size
-            self._size.value = new_size
+            # self._size.value = new_size
             self._dict[cell].append(data)
 
             # indicate success to allow process to move on
@@ -933,11 +929,12 @@ class ManagedCellDict(object):
         # with self._lock:
         return self._dict[key]
 
-    def empty(self, dict, counter):
+    def empty(self):
         with self._lock:
-            self._dict = dict
-            self._size = counter
-            self._is_full.value = 0
+            for _, cell_data in self._dict.items():
+                del cell_data[:]
+            # self._size.value = 0
+            # self._is_full.value = False
 
     # def __setitem__(self, key, value):
     #     with
@@ -1136,7 +1133,7 @@ class SwathFileCollection:
                                concat_dim="obs",
                                data_vars="minimal",
                                coords="minimal",
-                               combine_attrs="drop_conflicts").load()
+                               combine_attrs="drop_conflicts")
         writer = self.ioclass(self._cell_data_as_indexed_ra(ds, cell))
         writer.write(out_path, mode="a")
         # print(f"Wrote cell {cell}    ", end="\r")
@@ -1148,7 +1145,7 @@ class SwathFileCollection:
         """
         self._write_cell_ds(*args)
 
-    def _parallel_write_cells(self, cell_ds_dict, out_dir, processes=8):
+    def _parallel_write_cells(self, cell_ds_dict, out_dir, n_processes=8):
         """
         Write a stacked dataset to a set of cell files in parallel.
         """
@@ -1169,12 +1166,37 @@ class SwathFileCollection:
                     cell))
                 # cell_ds_dict[cell] = []
 
-        with mp.Pool(processes=processes) as pool:
+        with mp.Pool(processes=n_processes) as pool:
             for _ in tqdm.tqdm(pool.imap_unordered(self._write_cell_ds_wrapper,
                                                    args,
-                                                   chunksize=(len(args) // processes)+1),
+                                                   chunksize=(len(args) // n_processes)+1),
                                total=len(args)):
                 pass
+
+    def _parallel_process_swaths_from_queue(self,
+                                            cell_ds_dict,
+                                            read_queue,
+                                            finished_queue,
+                                            # cell_ds_dict_size,
+                                            # event,
+                                            ):
+        while True:
+            ds, ds_size_mb, swath = read_queue.get()
+            if ds is None and ds_size_mb is None and swath is None:
+                break
+            ds = self.process(ds)
+            cell_vals = swath.grid.gpi2cell(ds["location_id"].values)
+            for cell in cell_ds_dict.keys():
+                idxs = np.where(cell_vals == cell)[0]
+                if len(idxs) > 0:
+                    cell_ds = ds.isel(obs=idxs)
+                # if cell_ds is not None:
+                    # cell_ds = self.process(cell_ds)
+                    while not cell_ds_dict.add_data(cell, cell_ds):
+                        # sleep(1)
+                        pass
+            finished_queue.put(True)
+        return
 
     def _parallel_process_swath_given_fname(self,
                                             cell_ds_dict,
@@ -1184,8 +1206,7 @@ class SwathFileCollection:
                                             ):
         self._open(fname, lock=False)
         swath = self.collection[fname]
-        print(f"processing {fname}")
-        print("current size:", cell_ds_dict.size)
+        print("current buffer size:", cell_ds_dict.size, end="\r")
         ds = self.process(swath.read().load())
         cell_vals = swath.grid.gpi2cell(ds["location_id"].values)
         for cell in cell_ds_dict.keys():
@@ -1215,7 +1236,7 @@ class SwathFileCollection:
     def _parallel_process_swath_given_fname_wrapper(self, args):
         self._parallel_process_swath_given_fname(*args)
 
-    def stack(self, fnames, out_dir, mode="w", processes=8, process_memory_mb=None):
+    def stack(self, fnames, out_dir, mode="w", n_processes=8, process_memory_mb=None):
         """
         Stack swath files and split them into cell timeseries files. Reads swath files
         into memory, stacking their datasets in a buffer until the sum of their sizes
@@ -1239,27 +1260,21 @@ class SwathFileCollection:
         if mode == "w":
             for f in out_dir.glob("*.nc"):
                 f.unlink()
-        buffer = []
-        buffer_size = 0
-        # process = psutil.Process()
-        total_swaths = len(fnames)
+
         self.max_process_memory_mb = process_memory_mb or self.max_process_memory_mb
         with mp.Manager() as manager:
-            # event = manager.Event()
             cells = self.grid.get_cells()
             lock = manager.Lock()
             flag = manager.Value(ctypes.c_bool, False)
 
-            dict, counter = new_dict_parts(manager, cells)
+            dict = manager.dict()
+            for cell in cells:
+                dict[cell] = manager.list([])
+            counter = manager.Value("f", 0.0)
+
             cell_ds_dict = ManagedCellDict(dict, counter, lock, flag, self.max_process_memory_mb)
-            # cell_ds_dict = manager.dict()
-            # cell_ds_dict_size = mp.Value(float, 0.0)
-            # dict_lock = manager.Lock()
-            # for cell in self.grid.get_cells():
-            #     cell_ds_dict[cell] = manager.list([])
             #eventually pull this out into a method
-            read_pool = manager.Pool(processes=processes)
-                # for iter, f in enumerate(fnames):
+            read_pool = manager.Pool(processes=n_processes)
             print("Processing swaths...", end="\r")
             # event.set()
             # self._parallel_process_swath_given_fname_wrapper((cell_ds_dict,
@@ -1268,86 +1283,78 @@ class SwathFileCollection:
             #                                                   # event,
             #                                                   # dict_lock
             #                                                   ))
-            result = read_pool.map_async(self._parallel_process_swath_given_fname_wrapper,
-                                    [(cell_ds_dict,
-                                        fname,
-                                        # cell_ds_dict_size,
-                                        # event,
-                                        # dict_lock
-                                        )
-                                        for fname
-                                        in fnames], error_callback=print)
-            read_pool.close()
+
+            processes = []
+            read_queue = mp.Queue()
+            swaths_processed = mp.Queue()
+
+            for c in range(n_processes):
+                p = mp.Process(target=self._parallel_process_swaths_from_queue,
+                                    args=(cell_ds_dict,
+                                          read_queue,
+                                          swaths_processed))
+                processes.append(p)
+                p.start()
+
+            total_size = 0
+            swaths_sent = 0
+
+            for fname in fnames:
+                # reading the data here because it eats up time to try and read from many processes
+                self._open(fname)
+                swath = self.collection[fname]
+                ds = swath.read(decode_cf=False).load()
+                ds_size_mb = ds.nbytes / 1e6
+                total_size += ds_size_mb
+                print("current buffer size:", total_size, end="\r")
+                # now once the buffer is full, send the data to the read processes
+                if total_size > self.max_process_memory_mb:
+                    print("waiting to write")
+                    while swaths_sent > swaths_processed.qsize():
+                        print(swaths_sent, swaths_processed.qsize(), end="\r")
+                        pass
+                    print("writing")
+                    self._parallel_write_cells(cell_ds_dict, out_dir, n_processes=n_processes)
+                    cell_ds_dict.empty()
+                    total_size = ds_size_mb
+                read_queue.put((ds, ds_size_mb, swath))
+                swaths_sent += 1
+
+            if total_size > 0:
+                while swaths_sent > swaths_processed.qsize():
+                    pass
+                self._parallel_write_cells(cell_ds_dict, out_dir, n_processes=n_processes)
+                cell_ds_dict.empty()
+
+            for p in processes:
+                read_queue.put((None))
+
+            # result = read_pool.map_async(self._parallel_process_swath_given_fname_wrapper,
+            #                              [(cell_ds_dict,
+            #                                fname,
+            #                                )
+            #                               for fname
+            #                               in fnames], error_callback=print)
+            # read_pool.close()
+
             # as the pool is running, if the dict grows too large the event will be cleared.
             # when the event is cleared, the pool will wait for it to be set again before
             # continuing to add to the dict. This allows the pool to continue processing
             # swaths while the main thread writes the cell files to disk and clears the buffer.
-            while not result.ready():
-                # print(f"Processing swaths... {cell_ds_dict_size.value:.2f}MB/{self.max_process_memory_mb:.2f}MB", end="\r")
-                if cell_ds_dict.is_full:
-                    print(cell_ds_dict.size)
-                    print("Buffer full. Processing swath files...                     ")
-                # if not event.is_set():
-                    # with dict_lock:
-                    self._parallel_write_cells(cell_ds_dict, out_dir, processes=processes)
-                    _new_dict, _new_counter = new_dict_parts(manager, cells)
-                    cell_ds_dict.empty(_new_dict, _new_counter)
-                # for _ in tqdm.tqdm(pool.imap(self._parallel_process_swath_given_fname,
-                #                              [(cell_ds_dict, fname, cell_ds_dict_size, event)
-                #                               for fname
-                #                               in fnames]),
-                #                    total=len(fnames)):
-                    # pass
+            # while not result.ready():
+            #     if cell_ds_dict.is_full:
+            #         self._parallel_write_cells(cell_ds_dict, out_dir, processes=n_processes)
+            #         cell_ds_dict.empty()
+
             # when the pool is finished, write the remaining data to cell files
             print("successful?", result.successful())
             print("cell dict size", counter.value)
             print("writing")
-            self._parallel_write_cells(cell_ds_dict, out_dir, processes=processes)
-            _new_dict, _new_counter = new_dict_parts(manager, cells)
-            cell_ds_dict.empty(_new_dict, _new_counter)
+            # self._parallel_write_cells(cell_ds_dict, out_dir, processes=n_processes)
+            # cell_ds_dict.empty()
 
         print("Finished stacking swath files.")
 
-        # with mp.Pool(processes=processes) as pool:
-        #     for _ in tqdm.tqdm(pool.imap_unordered(self._write_cell_ds_wrapper,
-        #                                            [(chunks, out_dir / self.cell_fn_format.format(cell), cell)
-        #                                             for cell, chunks in cell_ds_dict.items()],
-        #                                            chunksize=(len(cell_ds_dict)//processes)+1),
-        #                        total=len(cell_ds_dict)):
-        #         pass
-        # for iter, f in enumerate(fnames):
-        #     self._open(f)
-        #     ds = self.collection.read()
-        #     # buffer_size  = process.memory_info().rss / 1e6
-        #     print(f"Filling swaths buffer... {buffer_size:.2f}MB/{self.max_process_memory_mb:.2f}MB", end="\r")
-        #     buffer_size += ds.nbytes / 1e6
-        #     if buffer_size > self.max_process_memory_mb:
-        #         out_dir.mkdir(parents=True, exist_ok=True)
-        #         print("\nBuffer full. Processing swath files...                     ", end="\r")
-        #         combined_ds = self.process(xr.combine_nested(buffer,
-        #                                         concat_dim="obs",
-        #                                         combine_attrs="drop_conflicts"))
-        #         print(f"Processed {iter}/{total_swaths} swath files. Dumping to cell files...")
-        #         self._parallel_write_cells(combined_ds, out_dir, processes=processes)
-        #         print("Finished dumping buffer to cell files.")
-        #         combined_ds.close()
-        #         buffer = []
-        #         buffer_size = ds.nbytes / 1e6
-        #     buffer.append(ds)
-
-        # if len(buffer) > 0:
-        #     out_dir.mkdir(parents=True, exist_ok=True)
-        #     print(f"Processed {total_swaths}/{total_swaths} swath files. Processing remaining buffer data...", end="\r")
-        #     combined_ds = self.process(
-        #             xr.combine_nested(buffer,
-        #                               concat_dim="obs",
-        #                               combine_attrs="drop_conflicts")
-        #     )
-        #     print(f"Processed {total_swaths}/{total_swaths} swath files. Dumping to cell files...")
-        #     self._parallel_write_cells(combined_ds, out_dir)
-        #     total_cell_files = len(list(out_dir.glob("*.nc")))
-        #     print(f"Finished stacking {total_swaths} swath files to {total_cell_files} cell files.")
-        #     combined_ds.close()
 
     def process(self, data):
         """

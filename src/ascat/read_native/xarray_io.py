@@ -613,12 +613,14 @@ class SwathIOBase(ABC):
         if chunks is not None:
             self._ds = self._ds.chunk(chunks)
 
-    def read(self, cell=None, location_id=None):
+    def read(self, cell=None, location_id=None, decode_cf=True):
         if location_id is not None:
             return self._read_location_ids(location_id)
         if cell is not None:
             return self._read_cell(cell)
-        return xr.decode_cf(self._ds, mask_and_scale=False)
+        if decode_cf:
+            return xr.decode_cf(self._ds, mask_and_scale=False)
+        return self._ds
 
     def write(self, filename, mode="w", **kwargs):
         if mode == "a":
