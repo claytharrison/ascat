@@ -33,6 +33,7 @@ from ascat.file_handling import MultiFileHandler
 from ascat.read_native.product_info import cell_io_catalog
 from ascat.read_native.product_info import grid_cache
 from ascat.utils import get_grid_gpis
+from ascat.read_native.xarray.indices import FibGridIndex
 
 
 class RaggedArrayCell:
@@ -743,7 +744,12 @@ class CellGridFiles(MultiFileHandler):
 
         if data:
             data = self._merge_data(data)
-            data.attrs["grid_name"] = self.grid_name
+            data["location_id"] = data["location_id"][data["locationIndex"]]
+            # data = data.set_coords(["location_id"])
+            # data = data.set_xindex(["location_id"],
+            #                        FibGridIndex,
+            #                        spacing=self.grid_sampling_km)
+            # data.attrs["grid_name"] = self.grid_name
             return data
 
         return None

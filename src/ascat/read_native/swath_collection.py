@@ -38,6 +38,8 @@ from pyresample.geometry import SwathDefinition
 from ascat.file_handling import ChronFiles
 from ascat.read_native.product_info import grid_cache
 from ascat.read_native.product_info import swath_io_catalog
+from ascat.read_native.xarray.indices import FibGridIndex
+# from ascat.read_native.xarray_wrappers import SwathDataset
 from ascat.utils import get_grid_gpis
 
 
@@ -710,7 +712,14 @@ class SwathGridFiles(ChronFiles):
                 mask = (data["time"] >= date_range[0]) & (data["time"] <= date_range[1])
                 data = data.sel(obs=mask.compute())
 
-            data.attrs["grid_name"] = self.grid_name
+            # data.attrs["grid_name"] = self.grid_name
+            data = (data
+                    .set_coords("location_id")
+                    .set_xindex("location_id",
+                                FibGridIndex,
+                                spacing=self.grid_sampling_km))
+            # data = SwathDataset(data, self.grid)
 
             return data
+
         return None
