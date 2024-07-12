@@ -41,7 +41,7 @@ class GridAccessor:
 
     @property
     def coord(self):
-        """Returns the indexed DGGS (cell ids) coordinate as a DataArray.
+        """Returns the indexed DGGS (location ids) coordinate as a DataArray.
 
         Raise a ``ValueError`` if no such coordinate is found on this Dataset or DataArray.
 
@@ -53,7 +53,7 @@ class GridAccessor:
         return self._obj[self._name]
 
     def sel_latlon(self, latitude, longitude):
-        """Select grid cells from latitude/longitude data.
+        """Select location ids from latitude/longitude data.
 
         Parameters
         ----------
@@ -66,11 +66,11 @@ class GridAccessor:
         -------
         subset
             A new :py:class:`xarray.Dataset` or :py:class:`xarray.DataArray`
-            with all cells that contain the input latitude/longitude data points.
+            with the nearest location_ids to the input latitude/longitude data points.
 
         """
-        cell_indexers = {self._name: self.index._latlon2cellid(latitude, longitude)}
-        return self._obj.sel(cell_indexers)
+        grid_indexers = {self._name: self.index._latlon2gpi(latitude, longitude)}
+        return self._obj.sel(grid_indexers)
 
     # def assign_latlon_coords(self) -> xr.Dataset | xr.DataArray:
     #     """Return a new Dataset or DataArray with new "latitude" and "longitude"
@@ -97,12 +97,13 @@ class GridAccessor:
             with all cells that intersect the input bounding box.
 
         """
-        cell_indexers = {self._name: self.index._bbox2cellid(bbox)}
-        return self._obj.sel(cell_indexers)
+        grid_indexers = {self._name: self.index._bbox2gpi(bbox)}
+        return self._obj.sel(grid_indexers)
 
     def plot(self, variable, **kwargs):
         """Plot the grid cells."""
-        lats, lons = self.index.cell_centers.T
+        lats, lons = self.index.gpis.T
         return plt.scatter(lons, lats, c=self._obj[variable], **kwargs)
         # return self._obj.plot.scatter(x=lons, y=lats, **kwargs)
         # return self.index.plot(**kwargs)
+        #

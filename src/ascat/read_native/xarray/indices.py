@@ -16,14 +16,30 @@ from xarray.core.indexing import merge_sel_results
 
 
 class GridIndex(Index):
+    """
+    A base class for grids(pygeogrids?)-based indices.
 
-    def __init__(self, cell_ids, dim):
+    Notes
+    -----
+    would be nice to get rid of _pd_index - any way to avoid this?
+    Methods from PandasIndex we currently use in these classes:
+    - create_variables
+    - isel
+    - sel
+    - equals (simply implement a numpy equals)
+    - join
+    - reindex_like
+    - index.values (easy to replace with homebrew)
+
+    """
+
+    def __init__(self, gpis, dim):
         self._dim = dim
 
-        if isinstance(cell_ids, PandasIndex):
-            self._pd_index = cell_ids
+        if isinstance(gpis, PandasIndex):
+            self._pd_index = gpis
         else:
-            self._pd_index = PandasIndex(cell_ids, dim)
+            self._pd_index = PandasIndex(gpis, dim)
 
     @classmethod
     def from_variables(cls, variables, *, options):
@@ -40,23 +56,23 @@ class GridIndex(Index):
 
     def sel(self, labels, method=None, tolerance=None):
         if method == "nearest":
-            raise ValueError("finding nearest grid cell has no meaning")
+            raise ValueError("finding nearest location id to a location id has no meaning")
         return self._pd_index.sel(labels, method=method, tolerance=tolerance)
 
-    def _replace(self, new_pd_index: PandasIndex):
+    def _replace(self, new_pd_index):
         raise NotImplementedError()
 
-    def _latlon2cellid(self, lat: Any, lon: Any) -> np.ndarray:
+    def _latlon2gpi(self, lat, lon):
         """convert latitude / longitude points to cell ids."""
         raise NotImplementedError()
 
-    def _cellid2latlon(self, cell_ids: Any) -> tuple[np.ndarray, np.ndarray]:
+    def _gpi2latlon(self, gpis):
         """convert cell ids to latitude / longitude (cell centers)."""
         raise NotImplementedError()
 
     @property
-    def cell_centers(self) -> tuple[np.ndarray, np.ndarray]:
-        return self._cellid2latlon(self._pd_index.index.values)
+    def gpi_coords(self):
+        return self._gpi2latlon(self._pd_index.index.values)
 
     def equals(self, other):
         return self._pd_index.equals(other._pd_index)
@@ -94,11 +110,11 @@ class FibGridIndex(GridIndex):
 
     def __init__(
         self,
-        cell_ids,
+        gpis,
         dim,
         spacing,
     ):
-        super().__init__(cell_ids, dim)
+        super().__init__(gpis, dim)
         self._spacing = spacing
         self._fibgrid = fibgrid_cache.fetch_or_store(spacing)
 
@@ -109,6 +125,9 @@ class FibGridIndex(GridIndex):
         *,
         options,
     ):
+        if len(variables) != 1:
+            raise ValueError("can only create a FibGridIndex from a single variable")
+
         _, var = next(iter(variables.items()))
         dim = next(iter(var.dims))
 
@@ -118,23 +137,23 @@ class FibGridIndex(GridIndex):
     def _replace(self, new_pd_index):
         return type(self)(new_pd_index, self._dim, self._spacing)
 
-    def _latlon2cellid(self, lat, lon):
+    def _latlon2gpi(self, lat, lon):
         # return coordinates_to_cells(lat, lon, self._spacing, radians=False)
         gpi, _ = self._fibgrid.find_nearest_gpi(lon, lat)
         if isinstance(gpi, np.ma.MaskedArray):
             return gpi.compressed()
         return gpi
 
-    def _cellid2latlon(self, cell_ids):
-        # return cells_to_coordinates(cell_ids, radians=False)
-        lons, lats = self._fibgrid.gpi2lonlat(cell_ids)
-        return (np.vstack([lats.compressed(), lons.compressed()]).T)
+    def _gpi2latlon(self, gpis):
+        # return cells_to_coordinates(gpis, radians=False)
+        lons, lats = self._fibgrid.gpi2lonlat(gpis)
+        return np.vstack([lats.compressed(), lons.compressed()]).T
 
-    def _bbox2cellid(self, bbox):
-        gpis = self._fibgrid.get_bbox_grid_points(*bbox)
-        if isinstance(gpis, np.ma.MaskedArray):
-            return gpis.compressed()
-        return gpis
+    def _bbox2gpi(self, bbox):
+        desired_gpis = self._fibgrid.get_bbox_grid_points(*bbox)
+        if isinstance(desired_gpis, np.ma.MaskedArray):
+            return desired_gpis.compressed()
+        return desired_gpis
 
     def _repr_inline_(self, max_width):
         return f"FibGridIndex(spacing={self._spacing})"
@@ -175,11 +194,11 @@ class FibGridRaggedArrayIndex(FibGridIndex):
 
     def __init__(
         self,
-        cell_ids,
+        gpis,
         dim,
         spacing,
     ):
-        super().__init__(cell_ids, dim, spacing)
+        super().__init__(gpis, dim, spacing)
         self._ds_location_ids = None
 
     def _repr_inline_(self, max_width):
@@ -203,4 +222,3 @@ class FibGridRaggedArrayIndex(FibGridIndex):
         return merge_sel_results(results)
 
         # return self._pd_index.sel(labels, method=method, tolerance=tolerance)
-
