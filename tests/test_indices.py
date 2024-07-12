@@ -22,32 +22,62 @@ from ascat.read_native.xarray.indices import GridIndex, FibGridCache, FibGridInd
 import ascat.read_native.xarray.accessor
 
 class TestGridIndex(unittest.TestCase):
+    def setUp(self):
+        # self.gpis = [0, 0, 1, 1, 1, 2, 4, 4, 5]
+        # self.temp_data = [20, 22, 12, 12, 13, 16, 30, 31, -4]
+        self.gpis = np.array([0, 1, 2, 4, 5])
+        self.temp_data = np.array([20, 13, 16, 31, -4])
+        self.dim = "obs"
+
     def test_init(self):
-        pass
+        gi = GridIndex(self.gpis, self.dim)
+        self.assertEqual(gi._dim, self.dim)
+        np.testing.assert_array_equal(gi._pd_index.index.values, self.gpis)
 
     def test_from_variables(self):
-        pass
+        gi = GridIndex(self.gpis, self.dim)
+        with self.assertRaises(NotImplementedError):
+            gi.from_variables(None, options=None)
 
     def test_create_variables(self):
-        pass
+        xarray_variable = xr.DataArray(np.random.rand(6), dims=[self.dim])
+        gi = GridIndex(self.gpis, self.dim)
+        index_var = gi.create_variables(xarray_variable)
+        # print(index_var)
+        # TODO not sure yet what to assert here, come back to this
+        # print(xarray_variable)
+        # self.assertEqual
 
     def test_isel(self):
         pass
+        # gi = GridIndex(self.gpis, self.dim)
+        # new_gpis = [0, 1, 1, 2, 4, 4, 5]
+        # new_gi = gi.isel({self.dim: slice(0, 7, 2)})
+        # self.assertEqual(new_gi._pd_index.index.values.tolist(), new_gpis)
 
     def test_sel(self):
-        pass
+        # doesn't work
+        gi = GridIndex(self.gpis, self.dim)
+        # new_gpis = [0, 1, 1, 2, 4, 4, 5]
+        gi_selection = gi.sel({"placeholder": [2, 4]})
+        np.testing.assert_array_equal(gi_selection.dim_indexers[self.dim], np.array([2, 3]))
+        np.testing.assert_array_equal(self.gpis[gi_selection.dim_indexers[self.dim]], np.array([2, 4]))
 
-    def test_replace(self):
-        pass
+    def test_equals(self):
+        gi = GridIndex(self.gpis, self.dim)
+        gi2 = GridIndex(self.gpis, self.dim)
+        gi3 = GridIndex(self.gpis, "abcdefg")
+        gi4 = GridIndex(np.array([9,8,6,7]), self.dim)
+        self.assertTrue(gi.equals(gi2))
+        self.assertFalse(gi.equals(gi3))
+        self.assertFalse(gi.equals(gi4))
 
-    def test_latlon2cellid(self):
-        pass
+    def test_to_pandas_index(self):
+        gi._pd_index
+        import pandas as pd
+        gi = GridIndex(self.gpis, self.dim)
+        self.assertTrue(isinstance(gi.to_pandas_index(), pd.Index))
 
-    def test_cellid2latlon(self):
-        pass
-
-    def test_cell_centers(self):
-        pass
 
 class TestFibGridCache(unittest.TestCase):
     def test_init(self):
@@ -76,10 +106,10 @@ class TestFibGridIndex(unittest.TestCase):
     def test_replace(self):
         pass
 
-    def test_latlon2cellid(self):
+    def test_latlon2gpi(self):
         pass
 
-    def test_cellid2latlon(self):
+    def test_gpi2latlon(self):
         pass
 
     def test_cell_centers(self):
@@ -108,10 +138,10 @@ class TestFibGridRaggedArrayIndex(unittest.TestCase):
     def test_replace(self):
         pass
 
-    def test_latlon2cellid(self):
+    def test_latlon2gpi(self):
         pass
 
-    def test_cellid2latlon(self):
+    def test_gpi2latlon(self):
         pass
 
     def test_cell_centers(self):
